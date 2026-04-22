@@ -1,0 +1,102 @@
+#cloud-config
+fqdn: ${FQDN}
+hostname: ${HOSTNAME_SHORT}
+prefer_fqdn_over_hostname: true
+manage_etc_hosts: false
+preserve_hostname: false
+timezone: ${TIMEZONE}
+
+package_update: true
+package_upgrade: true
+package_reboot_if_required: false
+
+ssh_pwauth: false
+disable_root: false
+
+${APT_BOOTCMD_BLOCK}
+
+apt:
+  conf: |
+    Acquire::Retries "3";
+    Acquire::http::Timeout "30";
+    APT::Install-Recommends "false";
+${APT_SOURCES_BLOCK}
+
+users:
+  - default
+  - name: root
+    lock_passwd: false
+    hashed_passwd: "${ROOT_PASSWORD_HASH}"
+  - name: sysadmin
+    gecos: Local Sysadmin
+    groups: [adm, sudo]
+    sudo: ["ALL=(ALL) ALL"]
+    shell: /bin/bash
+    lock_passwd: false
+    hashed_passwd: "${SYSADMIN_PASSWORD_HASH}"
+    ssh_authorized_keys:
+      - ${SYSADMIN_SSH_PUBKEY}
+  - name: ansible
+    gecos: Automation User
+    groups: [sudo]
+    sudo: ["ALL=(ALL) NOPASSWD:ALL"]
+    shell: /bin/bash
+    lock_passwd: true
+    ssh_authorized_keys:
+      - ${ANSIBLE_SSH_PUBKEY}
+
+packages:
+  - ca-certificates
+  - chrony
+  - curl
+  - dnsutils
+  - qemu-guest-agent
+
+write_files:
+  - path: /etc/ssh/sshd_config.d/99-cloud-hardening.conf
+    permissions: '0644'
+    owner: root:root
+    content: |
+      PasswordAuthentication no
+      KbdInteractiveAuthentication no
+      ChallengeResponseAuthentication no
+      PubkeyAuthentication yes
+      PermitRootLogin yes
+      PermitEmptyPasswords no
+      UsePAM yes
+
+  - path: /etc/sudoers.d/10-rootpw
+    permissions: '0440'
+    owner: root:root
+    content: |
+      Defaults rootpw
+
+  - path: /etc/apt/preferences.d/99-no-snapd
+    permissions: '0644'
+    owner: root:root
+    content: |
+      Package: snapd
+      Pin: release *
+      Pin-Priority: -1
+
+  - path: /etc/hosts
+    permissions: '0644'
+    owner: root:root
+    content: |
+      127.0.0.1 localhost
+      127.0.1.1 ${FQDN} ${HOSTNAME_SHORT}
+      ::1 localhost ip6-localhost ip6-loopback
+      ff02::1 ip6-allnodes
+      ff02::2 ip6-allrouters
+      ${STATIC_IP} ${FQDN} ${HOSTNAME_SHORT}
+
+runcmd:
+  - systemctl disable --now snapd.service snapd.socket snapd.seeded.service ModemManager.service || true
+  - apt-get purge -y snapd modemmanager
+  - apt-get autoremove -y --purge
+  - chage -I -1 -m 0 -M 99999 -E -1 root
+  - chage -I -1 -m 0 -M 99999 -E -1 sysadmin
+  - systemctl enable --now chrony
+  - chronyc -a makestep || true
+  - systemctl enable --now qemu-guest-agent || true
+  - systemctl restart ssh

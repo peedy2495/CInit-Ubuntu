@@ -1,0 +1,15 @@
+# Rendered cloud-init payloads and generated images
+**/files/.env
+**/files/user-data
+**/files/meta-data
+**/files/network-config
+**/image/
+**/*.iso
+**/*.img
+
+# Local scratch and editor state
+*.log
+*.tmp
+.DS_Store
+.vscode/
+.idea/
