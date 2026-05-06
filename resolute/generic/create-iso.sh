@@ -41,7 +41,7 @@ set -a
 source "${env_file}"
 set +a
 
-iso_name="cinit_UbuntuNoble_generic_${HOSTNAME_SHORT}.iso"
+iso_name="cinit_UbuntuResolute_generic_${HOSTNAME_SHORT}.iso"
 iso_path="${image_dir}/${iso_name}"
 
 required_vars=(
@@ -104,13 +104,13 @@ EOF
   sources_list: |
     Types: deb
     URIs: ${NEXUS_APT_ARCHIVE_URL}
-    Suites: noble noble-updates noble-backports
+    Suites: resolute resolute-updates resolute-backports
     Components: main restricted universe multiverse
     Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
 
     Types: deb
     URIs: ${NEXUS_APT_SECURITY_URL}
-    Suites: noble-security
+    Suites: resolute-security
     Components: main restricted universe multiverse
     Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
 EOF
@@ -118,6 +118,27 @@ EOF
 fi
 export APT_BOOTCMD_BLOCK
 export APT_SOURCES_BLOCK
+
+CHRONY_TIMESERVER_BLOCK=''
+CHRONY_TIMESERVER_RUNCMD_BLOCK=''
+if [[ -n "${TIMESERVER:-}" ]]; then
+  CHRONY_TIMESERVER_BLOCK="$(cat <<EOF
+  - path: /etc/chrony/conf.d/99-cinit-timeserver.conf
+    permissions: '0644'
+    owner: root:root
+    content: |
+      server ${TIMESERVER} iburst
+EOF
+)"
+  CHRONY_TIMESERVER_RUNCMD_BLOCK="$(cat <<'EOF'
+  - apt-get install -y chrony
+  - systemctl enable --now chrony
+  - chronyc -a makestep || true
+EOF
+)"
+fi
+export CHRONY_TIMESERVER_BLOCK
+export CHRONY_TIMESERVER_RUNCMD_BLOCK
 
 HOSTNAME_SHORT="${FQDN%%.*}"
 export HOSTNAME_SHORT

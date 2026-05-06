@@ -41,7 +41,7 @@ set -a
 source "${env_file}"
 set +a
 
-iso_name="cinit_UbuntuNoble_generic_${HOSTNAME_SHORT}.iso"
+iso_name="cinit_UbuntuResolute_docker-ce_${HOSTNAME_SHORT}.iso"
 iso_path="${image_dir}/${iso_name}"
 
 required_vars=(
@@ -53,6 +53,7 @@ required_vars=(
   GATEWAY_IP
   NAMESERVERS_YAML
   TIMEZONE
+  DOCKER_APT_REPOSITORY_URL
   ROOT_PASSWORD_HASH
   SYSADMIN_PASSWORD_HASH
   SYSADMIN_SSH_PUBKEY
@@ -77,6 +78,7 @@ if [[ -z "${NEXUS_APT_SECURITY_URL+x}" ]]; then
 fi
 
 APT_BOOTCMD_BLOCK=''
+APT_NATIVE_SOURCES_BOOTCMD_BLOCK=''
 APT_SOURCES_BLOCK=''
 if [[ -n "${NEXUS_APT_ARCHIVE_URL}" || -n "${NEXUS_APT_SECURITY_URL}" ]]; then
   if [[ -z "${NEXUS_APT_ARCHIVE_URL}" || -z "${NEXUS_APT_SECURITY_URL}" ]]; then
@@ -84,7 +86,7 @@ if [[ -n "${NEXUS_APT_ARCHIVE_URL}" || -n "${NEXUS_APT_SECURITY_URL}" ]]; then
     exit 1
   fi
 
-  APT_BOOTCMD_BLOCK="$(cat <<'EOF'
+  APT_NATIVE_SOURCES_BOOTCMD_BLOCK="$(cat <<'EOF'
 bootcmd:
   - |
     set -eu
@@ -98,26 +100,94 @@ bootcmd:
     done
 EOF
 )"
+  APT_BOOTCMD_BLOCK="${APT_NATIVE_SOURCES_BOOTCMD_BLOCK}"
 
   APT_SOURCES_BLOCK="$(cat <<EOF
   preserve_sources_list: false
   sources_list: |
     Types: deb
     URIs: ${NEXUS_APT_ARCHIVE_URL}
-    Suites: noble noble-updates noble-backports
+    Suites: resolute resolute-updates resolute-backports
     Components: main restricted universe multiverse
     Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
 
     Types: deb
     URIs: ${NEXUS_APT_SECURITY_URL}
-    Suites: noble-security
+    Suites: resolute-security
     Components: main restricted universe multiverse
     Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
 EOF
 )"
 fi
+
+docker_apt_repository_url="${DOCKER_APT_REPOSITORY_URL%/}"
+DOCKER_APT_REPOSITORY_URL="${docker_apt_repository_url}"
+export DOCKER_APT_REPOSITORY_URL
+
+DOCKER_APT_KEY_BOOTCMD_BLOCK="$(cat <<EOF
+  - |
+    set -eu
+    wget -qO /etc/apt/keyrings/docker.asc "${DOCKER_APT_REPOSITORY_URL}/gpg"
+    chmod a+r /etc/apt/keyrings/docker.asc
+EOF
+)"
+if [[ -n "${APT_BOOTCMD_BLOCK}" ]]; then
+  APT_BOOTCMD_BLOCK+=$'\n'
+  APT_BOOTCMD_BLOCK+="${DOCKER_APT_KEY_BOOTCMD_BLOCK}"
+else
+  APT_BOOTCMD_BLOCK="$(cat <<EOF
+bootcmd:
+${DOCKER_APT_KEY_BOOTCMD_BLOCK}
+EOF
+)"
+fi
 export APT_BOOTCMD_BLOCK
 export APT_SOURCES_BLOCK
+
+DOCKER_APT_SOURCES_BLOCK="$(cat <<EOF
+  sources:
+    docker-ce:
+      source: deb [signed-by=/etc/apt/keyrings/docker.asc] ${DOCKER_APT_REPOSITORY_URL} resolute stable
+      filename: docker-ce.list
+      append: false
+EOF
+)"
+export DOCKER_APT_SOURCES_BLOCK
+
+DOCKER_DAEMON_CONFIG_BLOCK=''
+if [[ -n "${DOCKER_INSECURE_REGISTRY:-}" ]]; then
+  DOCKER_DAEMON_CONFIG_BLOCK="$(cat <<EOF
+  - path: /etc/docker/daemon.json
+    permissions: '0644'
+    owner: root:root
+    content: |
+      {
+        "insecure-registries": ["${DOCKER_INSECURE_REGISTRY}"]
+      }
+EOF
+)"
+fi
+export DOCKER_DAEMON_CONFIG_BLOCK
+
+CHRONY_TIMESERVER_BLOCK=''
+CHRONY_TIMESERVER_RUNCMD_BLOCK=''
+if [[ -n "${TIMESERVER:-}" ]]; then
+  CHRONY_TIMESERVER_BLOCK="$(cat <<EOF
+  - path: /etc/chrony/conf.d/99-cinit-timeserver.conf
+    permissions: '0644'
+    owner: root:root
+    content: |
+      server ${TIMESERVER} iburst
+EOF
+)"
+  CHRONY_TIMESERVER_RUNCMD_BLOCK="$(cat <<'EOF'
+  - systemctl restart chronyd || true
+  - chronyc -a makestep || true
+EOF
+)"
+fi
+export CHRONY_TIMESERVER_BLOCK
+export CHRONY_TIMESERVER_RUNCMD_BLOCK
 
 HOSTNAME_SHORT="${FQDN%%.*}"
 export HOSTNAME_SHORT
