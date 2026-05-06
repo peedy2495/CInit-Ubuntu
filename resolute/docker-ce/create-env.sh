@@ -45,6 +45,38 @@ prompt_secret() {
   done
 }
 
+valid_yescrypt_hash() {
+  local value="${1:-}"
+
+  [[ "${value}" == \$y\$* && "${value}" != *replace_with* ]]
+}
+
+valid_pubkey() {
+  local value="${1:-}"
+
+  [[ "${value}" == ssh-* && "${value}" != *AAAA...* ]]
+}
+
+prompt_secret_hash_default() {
+  local prompt_label="$1"
+  local current_hash="${2:-}"
+  local value
+
+  if valid_yescrypt_hash "${current_hash}"; then
+    read -r -s -p "${prompt_label} [keep existing]: " value
+    printf '\n' >&2
+    if [[ -z "${value}" ]]; then
+      printf '%s' "${current_hash}"
+      return 0
+    fi
+    generate_yescrypt_hash "${value}"
+    return 0
+  fi
+
+  value="$(prompt_secret "${prompt_label}")"
+  generate_yescrypt_hash "${value}"
+}
+
 prompt_pubkey() {
   local prompt_label="$1"
   local value
@@ -52,6 +84,30 @@ prompt_pubkey() {
   while true; do
     read -r -p "${prompt_label}: " value
     if [[ "${value}" == ssh-* ]]; then
+      printf '%s' "${value}"
+      return 0
+    fi
+    printf 'Please provide a valid SSH public key starting with ssh-.\n' >&2
+  done
+}
+
+prompt_pubkey_default() {
+  local prompt_label="$1"
+  local default_value="${2:-}"
+  local value
+
+  while true; do
+    if valid_pubkey "${default_value}"; then
+      read -r -p "${prompt_label} [keep existing]: " value
+      if [[ -z "${value}" ]]; then
+        printf '%s' "${default_value}"
+        return 0
+      fi
+    else
+      read -r -p "${prompt_label}: " value
+    fi
+
+    if valid_pubkey "${value}"; then
       printf '%s' "${value}"
       return 0
     fi
@@ -78,28 +134,58 @@ prompt_text_default() {
   local default_value="$2"
   local value
 
-  read -r -p "${prompt_label} [${default_value}]: " value
-  if [[ -z "${value}" ]]; then
-    printf '%s' "${default_value}"
+  while true; do
+    if [[ -n "${default_value}" ]]; then
+      read -r -p "${prompt_label} [${default_value}]: " value
+      if [[ -z "${value}" ]]; then
+        printf '%s' "${default_value}"
+        return 0
+      fi
+    else
+      read -r -p "${prompt_label}: " value
+      if [[ -z "${value}" ]]; then
+        printf 'Value cannot be empty.\n' >&2
+        continue
+      fi
+    fi
+
+    printf '%s' "${value}"
     return 0
-  fi
-  printf '%s' "${value}"
+  done
 }
 
-prompt_text_optional() {
+prompt_text_optional_default() {
   local prompt_label="$1"
+  local default_value="${2:-}"
   local value
 
-  read -r -p "${prompt_label}: " value
+  if [[ -n "${default_value}" ]]; then
+    read -r -p "${prompt_label} [${default_value}]: " value
+    if [[ -z "${value}" ]]; then
+      printf '%s' "${default_value}"
+      return 0
+    fi
+  else
+    read -r -p "${prompt_label}: " value
+  fi
+
   printf '%s' "${value}"
 }
 
-prompt_mac() {
+prompt_mac_default() {
   local prompt_label="$1"
+  local default_value="${2:-}"
   local value
 
   while true; do
-    read -r -p "${prompt_label}: " value
+    if [[ -n "${default_value}" ]]; then
+      read -r -p "${prompt_label} [${default_value}]: " value
+      if [[ -z "${value}" ]]; then
+        value="${default_value}"
+      fi
+    else
+      read -r -p "${prompt_label}: " value
+    fi
     value="${value,,}"
     if [[ "${value}" =~ ^([[:xdigit:]]{2}:){5}[[:xdigit:]]{2}$ ]]; then
       printf '%s' "${value}"
@@ -120,34 +206,92 @@ escape_squote() {
   printf "%s" "$1" | sed "s/'/'\\\\''/g"
 }
 
+nameservers_yaml_to_csv() {
+  local yaml="${1:-}"
+  local line
+  local ns
+  local result=''
+
+  while IFS= read -r line; do
+    line="$(trim_text "${line}")"
+    if [[ "${line}" == "- "* ]]; then
+      ns="$(trim_text "${line#- }")"
+      if [[ -n "${ns}" ]]; then
+        if [[ -n "${result}" ]]; then
+          result+=","
+        fi
+        result+="${ns}"
+      fi
+    fi
+  done <<< "${yaml}"
+
+  printf '%s' "${result}"
+}
+
 if [[ ! -f "${template_file}" ]]; then
   printf 'Template file not found: %s\n' "${template_file}" >&2
   exit 1
 fi
 
-fqdn="$(prompt_text "FQDN (example: host.example.com)")"
-interface_mac="$(prompt_mac "Interface MAC address (example: 52:54:00:12:34:56)")"
-static_ip_cidr="$(prompt_text "Static IP with CIDR (example: 192.168.0.100/24)")"
-gateway_ip="$(prompt_text "Gateway IP (example: 192.168.0.1)")"
-nameservers_csv="$(prompt_text "Nameservers comma separated (example: 192.168.0.1,1.1.1.1)")"
-timezone="$(prompt_text_default "Timezone" "Europe/Berlin")"
-timeserver="$(prompt_text_optional "Time server (empty keeps image defaults)")"
-nexus_apt_archive_url="$(prompt_text_optional "Nexus APT archive URL (empty keeps Ubuntu image defaults)")"
-nexus_apt_security_url="$(prompt_text_optional "Nexus APT security URL (empty keeps Ubuntu image defaults)")"
-docker_apt_repository_url="$(prompt_text_default "Docker APT repository URL" "https://download.docker.com/linux/ubuntu")"
+have_env_file=false
+set -a
+source "${template_file}"
+template_timezone="${TIMEZONE:-Europe/Berlin}"
+template_timeserver="${TIMESERVER:-}"
+if [[ -f "${env_file}" ]]; then
+  source "${env_file}"
+  have_env_file=true
+fi
+set +a
+
+if [[ "${have_env_file}" == true ]]; then
+  nameservers_csv_default="$(nameservers_yaml_to_csv "${NAMESERVERS_YAML:-}")"
+  fqdn_default="${FQDN:-}"
+  interface_mac_default="${INTERFACE_MAC:-}"
+  static_ip_cidr_default="${STATIC_IP_CIDR:-}"
+  gateway_ip_default="${GATEWAY_IP:-}"
+  nexus_apt_archive_url_default="${NEXUS_APT_ARCHIVE_URL:-}"
+  nexus_apt_security_url_default="${NEXUS_APT_SECURITY_URL:-}"
+  docker_apt_repository_url_default="${DOCKER_APT_REPOSITORY_URL:-}"
+  docker_insecure_registry_default="${DOCKER_INSECURE_REGISTRY:-}"
+else
+  nameservers_csv_default=''
+  fqdn_default=''
+  interface_mac_default=''
+  static_ip_cidr_default=''
+  gateway_ip_default=''
+  nexus_apt_archive_url_default=''
+  nexus_apt_security_url_default=''
+  docker_apt_repository_url_default=''
+  docker_insecure_registry_default=''
+  TIMEZONE="${template_timezone}"
+  TIMESERVER="${template_timeserver}"
+  ROOT_PASSWORD_HASH=''
+  SYSADMIN_PASSWORD_HASH=''
+  SYSADMIN_SSH_PUBKEY=''
+  ANSIBLE_SSH_PUBKEY=''
+fi
+
+fqdn="$(prompt_text_default "FQDN (example: host.example.com)" "${fqdn_default}")"
+interface_mac="$(prompt_mac_default "Interface MAC address (example: 52:54:00:12:34:56)" "${interface_mac_default}")"
+static_ip_cidr="$(prompt_text_default "Static IP with CIDR (example: 192.168.0.100/24)" "${static_ip_cidr_default}")"
+gateway_ip="$(prompt_text_default "Gateway IP (example: 192.168.0.1)" "${gateway_ip_default}")"
+nameservers_csv="$(prompt_text_default "Nameservers comma separated (example: 192.168.0.1,1.1.1.1)" "${nameservers_csv_default}")"
+timezone="$(prompt_text_default "Timezone" "${TIMEZONE:-Europe/Berlin}")"
+timeserver="$(prompt_text_optional_default "Time server (empty keeps image defaults)" "${TIMESERVER:-}")"
+nexus_apt_archive_url="$(prompt_text_optional_default "Nexus APT archive URL (empty keeps Ubuntu image defaults)" "${nexus_apt_archive_url_default}")"
+nexus_apt_security_url="$(prompt_text_optional_default "Nexus APT security URL (empty keeps Ubuntu image defaults)" "${nexus_apt_security_url_default}")"
+docker_apt_repository_url="$(prompt_text_default "Docker APT repository URL" "${docker_apt_repository_url_default}")"
 docker_apt_repository_url="${docker_apt_repository_url%/}"
-docker_insecure_registry="$(prompt_text_optional "Docker registry URL for insecure registry (empty keeps Docker defaults)")"
+docker_insecure_registry="$(prompt_text_optional_default "Docker registry URL for insecure registry (empty keeps Docker defaults)" "${docker_insecure_registry_default}")"
 docker_insecure_registry="${docker_insecure_registry#http://}"
 docker_insecure_registry="${docker_insecure_registry#https://}"
 docker_insecure_registry="${docker_insecure_registry%%/*}"
 
-root_password="$(prompt_secret "Root password")"
-sysadmin_password="$(prompt_secret "sysadmin password")"
-sysadmin_pubkey="$(prompt_pubkey "sysadmin SSH public key")"
-ansible_pubkey="$(prompt_pubkey "ansible SSH public key")"
-
-root_hash="$(generate_yescrypt_hash "${root_password}")"
-sysadmin_hash="$(generate_yescrypt_hash "${sysadmin_password}")"
+root_hash="$(prompt_secret_hash_default "Root password" "${ROOT_PASSWORD_HASH:-}")"
+sysadmin_hash="$(prompt_secret_hash_default "sysadmin password" "${SYSADMIN_PASSWORD_HASH:-}")"
+sysadmin_pubkey="$(prompt_pubkey_default "sysadmin SSH public key" "${SYSADMIN_SSH_PUBKEY:-}")"
+ansible_pubkey="$(prompt_pubkey_default "ansible SSH public key" "${ANSIBLE_SSH_PUBKEY:-}")"
 
 hostname_short="${fqdn%%.*}"
 static_ip="${static_ip_cidr%%/*}"
