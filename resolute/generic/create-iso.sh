@@ -131,8 +131,7 @@ if [[ -n "${TIMESERVER:-}" ]]; then
 EOF
 )"
   CHRONY_TIMESERVER_RUNCMD_BLOCK="$(cat <<'EOF'
-  - apt-get install -y chrony
-  - systemctl enable --now chrony
+  - systemctl restart chronyd || true
   - chronyc -a makestep || true
 EOF
 )"

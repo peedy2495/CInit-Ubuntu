@@ -98,8 +98,8 @@ runcmd:
   - systemctl disable --now snapd.service snapd.socket snapd.seeded.service ModemManager.service || true
   - apt-get purge -y snapd modemmanager
   - apt-get autoremove -y --purge
-${CHRONY_TIMESERVER_RUNCMD_BLOCK}
   - chage -I -1 -m 0 -M 99999 -E -1 root
   - chage -I -1 -m 0 -M 99999 -E -1 sysadmin
   - systemctl enable --now qemu-guest-agent || true
   - systemctl restart ssh
+${CHRONY_TIMESERVER_RUNCMD_BLOCK}
